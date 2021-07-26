@@ -1,0 +1,258 @@
+---
+title: "Project"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Project: Yacht Hydrodynamics
+Trying out linear regression on this dataset.
+TODO:
+1. Check code and move commentary out out of code section.
+2. Add details on how the two models differ and why one model could be better to use than the other.
+3. Add info on how informative priors were calculated and used but it actually turned out to have worse variance for the response variable - Seem to be getting negative R^2 value when using informative priors - LOOK INTO IT!
+4. Write commentary on how we chose the 1st model since it's DIF was the lowest and then we went on to use the model to predict values in test dataset and plot the model parameters with predicted values (and with upper/lower credible sets)
+5. Understand more around what happens after model is created to plot everything. This link was used as reference: http://biometry.github.io/APES//LectureNotes/StatsCafe/Linear_models_jags.html
+6. Structure for report: Split code into sections and write commentary for each section followed by corresponding charts. 
+7. Figure out why there are negative values being predicted 
+8. Figure out what's the difference between MCMC that JAGS uses vs what gets created in the last few sections of first model
+
+More things to try out in the modeling side of the report:
+5. Find model performance indicators such as RMSE using predicted values in test dataset
+
+
+## Model 1: with all parameters
+
+```{r Project: model 1, echo=TRUE}
+#Include necessary package
+library(R2jags)
+library(rjags)
+library('corrplot')
+library('PerformanceAnalytics')
+
+# set the seed to make partitioning of training vs set reproducible
+set.seed(12345)
+
+# Upload data into dataframes
+yacht_data <- read.table("yacht_hydrodynamics.data", header=FALSE)
+names(yacht_data) <- c(
+  "longitudinal_position_buoyancy",
+  "prismatic_coeff",
+  "length_displacement_ratio",
+  "beam_draught_ratio",
+  "length_beam_ratio",
+  "froude_number",
+  "residuary_resistance"
+  )
+
+# Descriptive statistics
+summary(yacht_data)
+
+# Feature engineering
+# Standardize data
+# yacht_data[ , 1:7] <- scale(yacht_data[ , 1:7])
+
+# Evaluating correlations
+# Correlation matrix table
+res <- cor(yacht_data)
+round(res, 2)
+
+# Correlation matrix chart
+corrplot(as.matrix(cor(yacht_data)))
+
+# Splitting between train and test for cross-validation of model
+# Dedicating 80% and 20% of dataset for train and test respectively
+# 80% of the sample size
+sample_size <- floor(0.80 * nrow(yacht_data))
+train_ind <- sample(seq_len(nrow(yacht_data)), size = sample_size)
+train_yacht_data <- yacht_data[train_ind, ]
+test_yacht_data <- yacht_data[-train_ind, ]
+
+# Looking at correlation matrix, it looks like length_displacement_ratio and length_beam_ratio have high correlation (0.68), hence ignoring one of the variables at random.
+# 1. But before that, trying out linear regression with all predictors included.
+
+# define data structure required for JAGS
+yacht_jags_data <- with(train_yacht_data, list(
+    longitudinal_position_buoyancy = longitudinal_position_buoyancy, 
+    prismatic_coeff = prismatic_coeff,
+    length_displacement_ratio = length_displacement_ratio,
+    beam_draught_ratio = beam_draught_ratio,
+    length_beam_ratio = length_beam_ratio,
+    froude_number = froude_number,
+    residuary_resistance = residuary_resistance,
+    N_train = nrow(train_yacht_data)
+    )
+  )
+
+yacht_jags_data_test <- with(test_yacht_data, list(
+    longitudinal_position_buoyancy = longitudinal_position_buoyancy, 
+    prismatic_coeff = prismatic_coeff,
+    length_displacement_ratio = length_displacement_ratio,
+    beam_draught_ratio = beam_draught_ratio,
+    length_beam_ratio = length_beam_ratio,
+    froude_number = froude_number,
+    residuary_resistance = residuary_resistance,
+    N_test = nrow(test_yacht_data)
+    )
+  )
+
+linear_reg_model_jags <- function(){
+
+  # Likelihood
+	for (i in 1:N_train){
+		mu[i] <- beta0 + beta1 * longitudinal_position_buoyancy[i] + beta2 * prismatic_coeff[i] + beta3 * length_displacement_ratio[i] + beta4 * beam_draught_ratio[i] + beta5 * length_beam_ratio[i] + beta6 * froude_number[i]
+		residuary_resistance[i] ~ dnorm(mu[i], tau) 
+	}
+
+  # Priors
+	beta0 ~ dnorm(0, 0.01) # intercept
+	beta1 ~ dnorm(0, 0.01) # slopes
+	beta2 ~ dnorm(0, 0.01)
+	beta3 ~ dnorm(0, 0.01) 
+	beta4 ~ dnorm(0, 0.01)
+	beta5 ~ dnorm(0, 0.01)
+	beta6 ~ dnorm(0, 0.01)
+	sigma ~ dunif(0, 100) # SD
+	tau <- 1 / (sigma * sigma)
+
+}
+
+# initialize values for params
+init_values <- function(){
+	list(beta0 = rnorm(1), beta1 = rnorm(1), beta2 = rnorm(1), beta3 = rnorm(1), beta4 = rnorm(1), beta5 = rnorm(1), beta6 = rnorm(1), sigma = runif(1))
+}
+params <- c("beta0", "beta1", "beta2", "beta3", "beta4", "beta5", "beta6", "sigma")
+
+# Fit the model
+fit_linear_reg_model <- jags(data = yacht_jags_data, inits = init_values, parameters.to.save = params, model.file = linear_reg_model_jags,
+			   n.chains = 3, n.iter = 12000, n.burnin = 2000, n.thin = 10, DIC = TRUE)
+
+# View the results of the model
+fit_linear_reg_model
+
+```
+
+## Model 2: Now trying out by ignoring length_beam_ratio
+
+```{r model 2, echo=TRUE}
+
+# define data structure required for JAGS
+yacht_jags_data_multi_coll <- with(train_yacht_data, list(
+    longitudinal_position_buoyancy = longitudinal_position_buoyancy, 
+    prismatic_coeff = prismatic_coeff,
+    length_displacement_ratio = length_displacement_ratio,
+    beam_draught_ratio = beam_draught_ratio,
+    froude_number = froude_number,
+    residuary_resistance = residuary_resistance,
+    N_train = length(residuary_resistance)
+    )
+  )
+
+linear_reg_model_jags_multi_coll <- function(){
+	# Likelihood:
+	for (i in 1:N_train){
+		residuary_resistance[i] ~ dnorm(mu[i], tau) # tau is precision (1 / variance)
+		mu[i] <- beta0 + beta1 * longitudinal_position_buoyancy[i] + beta2 * prismatic_coeff[i] + beta3 * length_displacement_ratio[i] + beta4 * beam_draught_ratio[i] + beta5 * froude_number[i]
+	}
+	# Priors:
+	beta0 ~ dnorm(0, 0.01) # intercept
+	beta1 ~ dnorm(0, 0.01) # slopes
+	beta2 ~ dnorm(0, 0.01)
+	beta3 ~ dnorm(0, 0.01) 
+	beta4 ~ dnorm(0, 0.01)
+	beta5 ~ dnorm(0, 0.01)
+	sigma ~ dunif(0, 100) # standard deviation
+	tau <- 1 / (sigma * sigma) # sigma^2 doesn't work in JAGS
+	
+}
+
+# initialize values for params
+init_values <- function(){
+	list(beta0 = rnorm(1), beta1 = rnorm(1), beta2 = rnorm(1), beta3 = rnorm(1), beta4 = rnorm(1), beta5 = rnorm(1), sigma = runif(1))
+}
+params <- c("beta0", "beta1", "beta2", "beta3", "beta4", "beta5", "sigma")
+
+# Fit the model
+fit_linear_reg_model_multi_coll <- jags(data = yacht_jags_data_multi_coll, inits = init_values, parameters.to.save = params, model.file = linear_reg_model_jags_multi_coll,
+			   n.chains = 3, n.iter = 12000, n.burnin = 2000, n.thin = 10, DIC = TRUE)
+
+# View the results of the model
+fit_linear_reg_model_multi_coll
+```
+
+## Model 3. Trying out with user-specified Priors instead of non-informative priors. 
+
+```{r model 3, echo=TRUE}
+# 3. Trying out with user-specified Priors instead of non-informative priors. 
+# Using average and precision of sample observations (dataset) as prior mean and precision
+linear_reg_model_jags <- function(){
+	# Likelihood:
+	for (i in 1:N_train){
+		residuary_resistance[i] ~ dnorm(mu[i], tau) # tau is precision (1 / variance)
+		mu[i] <- beta0 + beta1 * longitudinal_position_buoyancy[i] + beta2 * prismatic_coeff[i] + beta3 * length_displacement_ratio[i] + beta4 * beam_draught_ratio[i] + beta5 * length_beam_ratio[i] + beta6 * froude_number[i]
+	}
+	# Priors:
+	beta0 ~ dnorm(0, 0.01) # intercept
+	beta1 ~ dnorm(0, 0.4) # slopes
+	beta2 ~ dnorm(0.5, 1000)
+	beta3 ~ dnorm(4.7, 15) 
+	beta4 ~ dnorm(3.9, 3)
+	beta5 ~ dnorm(3.2, 16)
+	beta6 ~ dnorm(0.2, 98)
+	sigma ~ dunif(0, 100) # standard deviation
+	tau <- 1 / (sigma * sigma) # sigma^2 doesn't work in JAGS
+	
+}
+
+# initialize values for params
+init_values <- function(){
+	list(beta0 = rnorm(1), beta1 = rnorm(1), beta2 = rnorm(1), beta3 = rnorm(1), beta4 = rnorm(1), beta5 = rnorm(1), beta6 = rnorm(1), sigma = runif(1))
+}
+params <- c("beta0", "beta1", "beta2", "beta3", "beta4", "beta5", "beta6", "sigma")
+
+# Fit the model
+fit_linear_reg_model_informative_prior <- jags(data = yacht_jags_data, inits = init_values, parameters.to.save = params, model.file = linear_reg_model_jags,
+			   n.chains = 3, n.iter = 12000, n.burnin = 2000, n.thin = 10, DIC = TRUE)
+
+# View the results of the model
+fit_linear_reg_model_informative_prior
+```
+
+```{r Proceeding with further steps on Model 2 (excluding 1 predictor), echo=TRUE}
+
+fit_linear_reg_model <- fit_linear_reg_model_multi_coll
+# Visual check of how the MCMC chains have mixed
+traceplot(fit_linear_reg_model, mfrow = c(2, 2), ask = F)
+
+# View the parameters' marginal posterior distribution 
+plot(fit_linear_reg_model)
+
+# Plot the model
+fit_linear_reg_model_mcmc <- as.mcmc(fit_linear_reg_model)
+
+# Using the model to predict residuary resistance for the test dataset
+# Combining the instances of MCMC first
+fit_linear_reg_model_mcmc_merge <- as.mcmc(rbind(fit_linear_reg_model_mcmc[[1]], 
+                                fit_linear_reg_model_mcmc[[2]], 
+                                fit_linear_reg_model_mcmc[[3]]))
+
+# Estimating predicted value of residuary resistance for each predictor value in test dataset 
+prediction_mean <- mean(fit_linear_reg_model_mcmc_merge[, "beta0"]) + mean(fit_linear_reg_model_mcmc_merge[, "beta1"]) * yacht_jags_data_test$longitudinal_position_buoyancy + mean(fit_linear_reg_model_mcmc_merge[, "beta2"]) * yacht_jags_data_test$prismatic_coeff +  mean(fit_linear_reg_model_mcmc_merge[, "beta3"]) * yacht_jags_data_test$length_displacement_ratio + mean(fit_linear_reg_model_mcmc_merge[, "beta4"]) * yacht_jags_data_test$beam_draught_ratio + mean(fit_linear_reg_model_mcmc_merge[, "beta5"]) * yacht_jags_data_test$froude_number
+
+prediction_mean_distribution <- matrix(NA, nrow = nrow(fit_linear_reg_model_mcmc_merge), ncol = yacht_jags_data_test$N_test)
+for (i in 1:nrow(prediction_mean_distribution)){
+	prediction_mean_distribution[i,] <- fit_linear_reg_model_mcmc_merge[i,"beta0"] + fit_linear_reg_model_mcmc_merge[i, "beta1"] * yacht_jags_data_test$longitudinal_position_buoyancy + fit_linear_reg_model_mcmc_merge[i, "beta2"] * yacht_jags_data_test$prismatic_coeff +  fit_linear_reg_model_mcmc_merge[i, "beta3"] * yacht_jags_data_test$length_displacement_ratio + fit_linear_reg_model_mcmc_merge[i, "beta4"] * yacht_jags_data_test$beam_draught_ratio + fit_linear_reg_model_mcmc_merge[i, "beta5"] * yacht_jags_data_test$froude_number
+}
+credible_lower <- apply(prediction_mean_distribution, MARGIN = 2, quantile, prob = 0.025)
+credible_upper <- apply(prediction_mean_distribution, MARGIN = 2, quantile, prob = 0.975)
+
+# Plot mean model prediction and the lower/upper credible sets
+# Choosing only froude_number to visualize since it has the highest correlation with response var
+plot(yacht_jags_data$residuary_resistance ~ yacht_jags_data$froude_number, data = yacht_jags_data)
+lines(yacht_jags_data_test$froude_number, prediction_mean)
+lines(yacht_jags_data_test$froude_number, credible_lower, lty = 2, col = "red")
+lines(yacht_jags_data_test$froude_number, credible_upper, lty = 2, col = "red")
+```
